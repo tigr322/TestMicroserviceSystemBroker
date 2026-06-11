@@ -27,3 +27,16 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
+# AI agent context files
+AGENTS.md
+CLAUDE.md
+.cursorrules
+.cursorignore
+.cursor/
+.copilot/
+.github/copilot-instructions.md
+.aider*
+.continue/
+.codeium/
+openai-codex*
+GEMINI.md

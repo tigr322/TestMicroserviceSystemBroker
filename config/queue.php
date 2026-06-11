@@ -13,7 +13,7 @@ return [
     |
     */
 
-    'default' => env('QUEUE_CONNECTION', 'database'),
+    'default' => env('QUEUE_CONNECTION', 'rabbitmq'),
 
     /*
     |--------------------------------------------------------------------------
@@ -70,6 +70,58 @@ return [
             'queue' => env('REDIS_QUEUE', 'default'),
             'retry_after' => (int) env('REDIS_QUEUE_RETRY_AFTER', 90),
             'block_for' => null,
+            'after_commit' => false,
+        ],
+
+        /*
+        |----------------------------------------------------------------------
+        | RabbitMQ — priority queue driver
+        |----------------------------------------------------------------------
+        | Workers are started by Horizon with queue order:
+        |   notifications.high,notifications.normal,notifications.low
+        | This guarantees high-priority messages are always consumed first.
+        */
+        'rabbitmq' => [
+            'driver'   => 'rabbitmq',
+            'queue'    => env('RABBITMQ_QUEUE', 'default'),
+            'connection' => 'PhpAmqpLib\Connection\AMQPLazyConnection',
+            'hosts' => [
+                [
+                    'host'     => env('RABBITMQ_HOST', '127.0.0.1'),
+                    'port'     => env('RABBITMQ_PORT', 5672),
+                    'user'     => env('RABBITMQ_USER', 'guest'),
+                    'password' => env('RABBITMQ_PASSWORD', 'guest'),
+                    'vhost'    => env('RABBITMQ_VHOST', '/'),
+                ],
+            ],
+            'options' => [
+                'ssl_options' => [
+                    'cafile'      => env('RABBITMQ_SSL_CAFILE', null),
+                    'local_cert'  => env('RABBITMQ_SSL_LOCALCERT', null),
+                    'local_key'   => env('RABBITMQ_SSL_LOCALKEY', null),
+                    'verify_peer' => env('RABBITMQ_SSL_VERIFY_PEER', true),
+                    'passphrase'  => env('RABBITMQ_SSL_PASSPHRASE', null),
+                ],
+                'queue' => [
+                    'job' => 'VladimirYuldashev\LaravelQueueRabbitMQ\Queue\Jobs\RabbitMQJob',
+                    'exchange' => [
+                        'name' => env('RABBITMQ_EXCHANGE_NAME', 'notifications'),
+                        'type' => env('RABBITMQ_EXCHANGE_TYPE', 'direct'),
+                        'passive'     => false,
+                        'durable'     => true,
+                        'auto_delete' => false,
+                    ],
+                    'durable'           => true,
+                    'exclusive'         => false,
+                    'auto_delete'       => false,
+                    'reroute_failed'    => false,
+                    'failed_exchange'   => null,
+                    'failed_routing_key'=> 'notifications.failed',
+                    'prioritize_delayed' => false,
+                    'queue_max_priority' => null,
+                ],
+            ],
+            'worker' => env('RABBITMQ_WORKER', 'default'),
             'after_commit' => false,
         ],
 

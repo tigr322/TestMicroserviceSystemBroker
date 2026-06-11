@@ -1,0 +1,74 @@
+sequenceDiagram
+    autonumber
+    participant C  as Client
+    participant AC as API Controller
+    participant NS as NotificationService
+    participant RC as Redis Cache
+    participant DB as PostgreSQL
+    participant MQ as RabbitMQ
+    participant WK as Queue Worker
+    participant PR as Mock Provider
+
+    C  ->>  AC : POST /api/notifications/send
+    AC ->>  AC : Validate request (FormRequest)
+
+    alt has idempotency_key
+        AC ->>  NS : send(SendNotificationDTO)
+        NS ->>  RC : GET idempotency:{key}
+        alt key exists in Redis
+            RC -->> NS : cached response
+            NS -->> AC : NotificationResultDTO (deduplicated=true)
+            AC -->> C  : 200 OK (cached payload)
+        else key not found in Redis
+            RC -->> NS : nil
+            NS ->>  DB : SELECT idempotency_keys WHERE key = ?
+            alt row exists in PostgreSQL
+                DB -->> NS : IdempotencyKey record
+                NS -->> AC : NotificationResultDTO (deduplicated=true)
+                AC -->> C  : 200 OK (cached payload)
+            end
+        end
+    end
+
+    NS ->>  DB : BEGIN TRANSACTION
+    loop for each recipient_id
+        NS ->>  DB : INSERT notifications (status=queued)
+        DB -->> NS : notification.id
+    end
+    NS ->>  DB : COMMIT
+
+    NS ->>  DB : INSERT idempotency_keys (key, hash, payload, expires_at)
+    NS ->>  RC : SET idempotency:{key} = payload (TTL)
+
+    loop for each notification_id
+        NS ->>  MQ : Publish job → notifications.{priority} queue
+    end
+
+    NS -->> AC : NotificationResultDTO (deduplicated=false)
+    AC -->> C  : 202 Accepted
+
+    Note over MQ,WK: Workers consume high → normal → low
+    MQ ->>  WK : Deliver ProcessNotificationJob
+    WK ->>  DB : UPDATE status = sent
+    WK ->>  PR : provider.send(notification)
+
+    alt Success
+        PR -->> WK : ProviderResult(messageId)
+        WK ->>  DB : UPDATE status = delivered, provider_message_id
+    else Temporary failure
+        PR -->> WK : throw TemporaryProviderException
+        WK ->>  DB : UPDATE status = queued, retry_count++
+        WK ->>  MQ : Re-queue with back-off (10s → 30s → 60s)
+        Note over MQ,WK: Up to 3 retries; on final retry...
+        MQ ->>  WK : Deliver (attempt 4)
+        WK ->>  PR : provider.send(notification)
+        PR -->> WK : ProviderResult(messageId)
+        WK ->>  DB : UPDATE status = delivered
+    else Permanent failure
+        PR -->> WK : throw PermanentProviderException
+        WK ->>  DB : UPDATE status = failed
+        Note over WK: job.delete() — no retry
+    else All retries exhausted
+        WK ->>  WK : failed() callback
+        WK ->>  DB : UPDATE status = failed
+    end

@@ -1,0 +1,291 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Notification Microservice API",
+        "description": "Cloud-native Notification Service for high-volume SMS and Email delivery.\n\n## Features\n- **Bulk dispatch** — send to thousands of recipients in a single request\n- **Priority queues** — `high`, `normal`, `low` processed in strict order\n- **Idempotency** — duplicate requests are safely deduplicated via Redis + PostgreSQL\n- **Retry with back-off** — temporary failures retried at 10 s → 30 s → 60 s\n- **Delivery tracking** — full status history per recipient\n\n## Queue Flow\n```\nPOST /api/notifications/send\n    → Validation\n    → Idempotency Check (Redis / PostgreSQL)\n    → Save Notifications (PostgreSQL, status=queued)\n    → Publish to RabbitMQ (priority queue)\n    → Worker picks up job\n    → Mark status=sent\n    → Call mock provider\n    → success  → status=delivered\n    → temp err → retry (back-off) → ... → delivered | failed\n    → perm err → status=failed (no retry)\n```",
+        "contact": {
+            "name": "Notification Team",
+            "email": "notifications@example.com"
+        },
+        "license": {
+            "name": "MIT"
+        },
+        "version": "1.0.0"
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8080",
+            "description": "Local Docker environment"
+        },
+        {
+            "url": "https://api.example.com",
+            "description": "Production"
+        }
+    ],
+    "paths": {
+        "/api/notifications/send": {
+            "post": {
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Send bulk notifications",
+                "description": "Accepts a bulk notification request and enqueues individual jobs per recipient. Idempotency is enforced via the optional idempotency_key field.",
+                "operationId": "8ada6e8d4cd7a0b71871e5f7b856d90f",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "channel",
+                                    "priority",
+                                    "message",
+                                    "recipient_ids"
+                                ],
+                                "properties": {
+                                    "channel": {
+                                        "type": "string",
+                                        "example": "email",
+                                        "enum": [
+                                            "email",
+                                            "sms"
+                                        ]
+                                    },
+                                    "priority": {
+                                        "type": "string",
+                                        "example": "high",
+                                        "enum": [
+                                            "high",
+                                            "normal",
+                                            "low"
+                                        ]
+                                    },
+                                    "message": {
+                                        "type": "string",
+                                        "example": "Your verification code is 1234"
+                                    },
+                                    "recipient_ids": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "integer"
+                                        },
+                                        "example": [
+                                            1,
+                                            2,
+                                            3,
+                                            4
+                                        ]
+                                    },
+                                    "idempotency_key": {
+                                        "type": "string",
+                                        "example": "unique-request-id-abc123",
+                                        "nullable": true
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "202": {
+                        "description": "Notifications accepted and queued",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "notification_ids": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "integer"
+                                            },
+                                            "example": [
+                                                101,
+                                                102,
+                                                103
+                                            ]
+                                        },
+                                        "deduplicated": {
+                                            "type": "boolean",
+                                            "example": false
+                                        },
+                                        "message": {
+                                            "type": "string",
+                                            "example": "4 notification(s) queued successfully."
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "200": {
+                        "description": "Duplicate request — cached response returned",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "notification_ids": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "integer"
+                                            }
+                                        },
+                                        "deduplicated": {
+                                            "type": "boolean",
+                                            "example": true
+                                        },
+                                        "message": {
+                                            "type": "string",
+                                            "example": "Duplicate request — original response returned."
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "message": {
+                                            "type": "string",
+                                            "example": "The channel field is required."
+                                        },
+                                        "errors": {
+                                            "type": "object"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/subscribers/{id}/notifications": {
+            "get": {
+                "tags": [
+                    "Notifications"
+                ],
+                "summary": "Get notifications for a subscriber",
+                "description": "Returns all notifications dispatched to the given recipient, ordered by most recent first.",
+                "operationId": "4ac33aab3a4f4206510fd1eeb1ff58a8",
+                "parameters": [
+                    {
+                        "name": "id",
+                        "in": "path",
+                        "description": "Recipient / subscriber ID",
+                        "required": true,
+                        "schema": {
+                            "type": "integer",
+                            "example": 42
+                        }
+                    },
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "description": "Filter by status",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "queued",
+                                "sent",
+                                "delivered",
+                                "failed"
+                            ]
+                        }
+                    },
+                    {
+                        "name": "channel",
+                        "in": "query",
+                        "description": "Filter by channel",
+                        "required": false,
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "email",
+                                "sms"
+                            ]
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of notifications",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "properties": {
+                                            "id": {
+                                                "type": "integer",
+                                                "example": 100
+                                            },
+                                            "channel": {
+                                                "type": "string",
+                                                "example": "sms"
+                                            },
+                                            "priority": {
+                                                "type": "string",
+                                                "example": "high"
+                                            },
+                                            "status": {
+                                                "type": "string",
+                                                "example": "delivered"
+                                            },
+                                            "message": {
+                                                "type": "string",
+                                                "example": "Your order has been shipped"
+                                            },
+                                            "retry_count": {
+                                                "type": "integer",
+                                                "example": 0
+                                            },
+                                            "provider_message_id": {
+                                                "type": "string",
+                                                "example": "sms_abc123",
+                                                "nullable": true
+                                            },
+                                            "created_at": {
+                                                "type": "string",
+                                                "format": "date-time"
+                                            },
+                                            "updated_at": {
+                                                "type": "string",
+                                                "format": "date-time",
+                                                "nullable": true
+                                            }
+                                        },
+                                        "type": "object"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "Notifications",
+            "description": "Bulk notification dispatch and delivery tracking"
+        }
+    ],
+    "components": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT"
+            }
+        }
+    }
+}
